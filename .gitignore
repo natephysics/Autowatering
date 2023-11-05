@@ -1,6 +1,6 @@
 # contains the details of the smart irrigation system
-plant_data.json
-token.json
+plant_settings.json
+project_settings.json
 
 # contains some of the notebooks used for data analysis
 notebooks/* 

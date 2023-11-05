@@ -34,9 +34,9 @@ root = pyrootutils.setup_root(
 
 import datetime
 import json
-from os import getenv
 from time import sleep
 
+import click
 import pandas as pd
 import requests
 import tinytuya
@@ -44,6 +44,23 @@ from loguru import logger
 from simple_pid import PID
 
 max_watering_time = 25  # seconds
+log_file_path = "logs/autowater.log"
+
+#
+logger.add(log_file_path, rotation="1 month", retention="3 years", compression="zip")
+
+
+def check_in_to_snitch(snitch_url):
+    try:
+        response = requests.get(snitch_url)
+        response.raise_for_status()  # this will raise an exception for HTTP errors
+        logger.info(f"Checked in to snitch: {snitch_url}")
+    except Exception as e:
+        # Handle or log the exception as appropriate
+        pass
+
+
+# Then, periodically call this function from your main process or a scheduled task.
 
 
 def water(plant, dev_id, ip, local_key, seconds):
@@ -100,15 +117,42 @@ def water(plant, dev_id, ip, local_key, seconds):
         )
 
 
-def main():
+@click.command()
+@click.option(
+    "--clear-pid-history",
+    is_flag=True,
+    default=False,
+    required=False,
+    help="Device ID",
+    type=bool,
+)
+@click.option(
+    "--dont-water",
+    required=False,
+    is_flag=True,
+    default=False,
+    help="Will not water or make changes to the plant settings file",
+    type=bool,
+)
+def main(
+    dont_water: bool = False,
+    clear_pid_history: bool = False,
+):
+    """Main entry point for the autowater script.
+
+    Args:
+        dont_water (bool, optional): Will skip watering the plants and won't make changes to the plant settings file. Defaults to False.
+        clear_pid_history (bool, optional): Clears the PID history. Defaults to False.
+    """
     # import the pump_list.json file as a dictionary
-    plant_list: dict = json.load(open("plant_data.json"))
+    plant_dict: dict = json.load(open("plant_settings.json"))
+    project_settings = json.load(open("project_settings.json"))
 
     # Configuration
-    home_assistant_url = "http://127.0.0.1:8123"
+    home_assistant_url = f"{project_settings['home_assistant_url']}:{project_settings['home_assistant_port']}"
 
     # get the access token from the file ../token.json
-    access_token = json.load(open("token.json"))["access_token"]
+    access_token = project_settings["access_token"]
 
     assert access_token, "Access token is empty"
 
@@ -125,8 +169,8 @@ def main():
     start_time = (datetime.datetime.now() - datetime.timedelta(days=3)).isoformat()
     end_time = datetime.datetime.now().isoformat()
 
-    # we want to loop this process for each plant in the plant_list
-    for plant_name, plant_data in plant_list.items():
+    # we want to loop this process for each plant in the plant_dict
+    for plant_name, plant_data in plant_dict.items():
         # Making the request to the Home Assistant API
         response = requests.get(
             f"{home_assistant_url}/api/history/period/{start_time}",
@@ -183,7 +227,7 @@ def main():
     sensor_df.sort_index(inplace=True)
 
     pid_controllers = {}
-    for plant, plant_config in plant_list.items():
+    for plant, plant_config in plant_dict.items():
         pid_controllers[plant]: PID = PID(
             Kp=plant_config["Kp"],
             Ki=plant_config["Ki"],
@@ -191,11 +235,19 @@ def main():
             setpoint=plant_config["target"],
         )
 
-    # Set output limits if necessary
-    pid_controllers[plant].output_limits = (
-        0,
-        max_watering_time,
-    )  # For example, no negative watering time
+        # Set output limits if necessary
+        pid_controllers[plant].output_limits = (
+            0,
+            max_watering_time,
+        )  # For example, no negative watering time
+
+        # set the integral and last error
+        if clear_pid_history:
+            pid_controllers[plant]._integral = 0
+            pid_controllers[plant]._last_error = 0
+        else:
+            pid_controllers[plant]._integral = plant_config["integral"]
+            pid_controllers[plant]._last_error = plant_config["last_error"]
 
     # Iterate over the DataFrame's columns
     for plant, series in sensor_df.items():
@@ -208,16 +260,16 @@ def main():
 
                 # if the plant is at 40% or greater, don't water until it's at 34%
                 if current_moisture_level >= 40:
-                    plant_list[plant]["resting"] = True
+                    plant_dict[plant]["resting"] = True
                     logger.info(
                         f"Plant {plant} is resting with moisture level {current_moisture_level}"
                     )
                     continue
 
                 # check to see if the plant is resting
-                if plant_list[plant]["resting"]:
+                if plant_dict[plant]["resting"]:
                     if current_moisture_level <= 34:
-                        plant_list[plant]["resting"] = False
+                        plant_dict[plant]["resting"] = False
                     else:
                         logger.info(
                             f"Plant {plant} is resting with moisture level {current_moisture_level}"
@@ -229,9 +281,9 @@ def main():
                 # Compute the control variable (how long to water)
                 control = pid(current_moisture_level)
 
-                # store the integral and last error in the plant_list dictionary
-                plant_list[plant]["integral"] = pid._integral
-                plant_list[plant]["last_error"] = pid._last_error
+                # store the integral and last error in the plant_dict dictionary
+                plant_dict[plant]["integral"] = pid._integral
+                plant_dict[plant]["last_error"] = pid._last_error
 
                 # Decide if we need to water the plant
                 if control > 0:
@@ -240,13 +292,14 @@ def main():
                     logger.info(
                         f"Watering {plant} with moisture level {current_moisture_level} for {control} seconds"
                     )
-                    water(
-                        plant=plant,
-                        dev_id=plant_list[plant]["id"],
-                        ip=plant_list[plant]["ip"],
-                        local_key=plant_list[plant]["local_key"],
-                        seconds=control,
-                    )
+                    if not dont_water:
+                        water(
+                            plant=plant,
+                            dev_id=plant_dict[plant]["id"],
+                            ip=plant_dict[plant]["ip"],
+                            local_key=plant_dict[plant]["local_key"],
+                            seconds=control,
+                        )
                 else:
                     logger.info(
                         f"Plant {plant} is good with moisture level {current_moisture_level}, control: {control}"
@@ -254,9 +307,12 @@ def main():
         else:
             logger.error(f"No PID controller for {plant}")
 
-    # write out the plant_list to a json file
-    with open("plant_data.json", "w") as f:
-        json.dump(plant_list, f, indent=4)
+    # write out the plant_dict to a json file
+    if not dont_water:
+        with open("plant_data.json", "w") as f:
+            json.dump(plant_dict, f, indent=4)
+
+    check_in_to_snitch(project_settings["snitch_url"])
 
 
 if __name__ == "__main__":

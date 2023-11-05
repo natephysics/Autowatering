@@ -1,0 +1,7 @@
+click==8.1.7
+loguru==0.7.2
+pandas==2.1.2
+pyrootutils==1.0.4
+requests==2.31.0
+simple-pid==2.0.0
+tinytuya==1.12.11
