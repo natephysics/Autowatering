@@ -1,0 +1,17 @@
+{
+    "pump_1": {
+        "name": "pump_1",
+        "ip": "192.168.0.20",
+        "device_id": "xxxxxxxxxxxxxxxxxxxxxx",
+        "local_key": "xxxxxxxxxxxxxxxxxxxxxx",
+        "max_watering_time": 60,
+        "target": 35,
+        "Kp": 1.0,
+        "Ki": 0.1,
+        "Kd": 0.05,
+        "integral": 0.0,
+        "last_error": 0.0,
+        "sensor": "sensor.<devicename>_soil_moisture_1",
+        "pump_sensor": "sensor.pump_1"
+    }
+}

@@ -1,0 +1,6 @@
+{
+	"access_token": "My_very_long_access_token",
+	"snitch_url": "https://nosnch.in/mysnitchID",
+	"home_assistant_url": "http://127.0.0.1",
+	"home_assistant_port": "8123"
+}
