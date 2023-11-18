@@ -80,6 +80,95 @@ def send_data_to_home_assistant(value, sensor_name, home_assistant_url, headers)
         )
 
 
+def get_data_from_home_assistant(
+    plant_dict: dict,
+    sensor: str,
+    home_assistant_url: str,
+    headers: str,
+):
+    """Gets the data from Home Assistant and returns a DataFrame.
+
+    Args:
+        plant_dict (dict): A dictionary containing the plant settings.
+        sensor (str): The name of the sensor in Home Assistant.
+        home_assistant_url (str): The URL of the Home Assistant instance.
+        headers (str): The headers for the Home Assistant API.
+        df (pd.DataFrame, optional): A DataFrame to merge the data into. Defaults to None.
+    """
+    # Initialize the DataFrame
+    sensor_df = None
+
+    # Specify the time period for the history
+    # Here we're getting the history for the last day
+    start_time = (datetime.datetime.now() - datetime.timedelta(days=10)).isoformat()
+    end_time = datetime.datetime.now().isoformat()
+
+    # we want to loop this process for each plant in the plant_dict
+    for plant_name, plant_data in plant_dict.items():
+        # Making the request to the Home Assistant API
+        response = requests.get(
+            f"{home_assistant_url}/api/history/period/{start_time}",
+            headers=headers,
+            params={
+                "filter_entity_id": f"sensor.{plant_data[sensor]}",
+                "end_time": end_time,
+            },
+        )
+
+        # Check for successful response
+        if response.status_code == 200:
+            history_data = response.json()
+            # logger.info(json.dumps(history_data, indent=2))
+        else:
+            logger.error(
+                f"Failed to retrieve history: {response.status_code}, {response.text}"
+            )
+
+        # Parse the history data into a pandas DataFrame
+        history_list = []
+        for state_info in history_data[
+            0
+        ]:  # Assuming the sensor's history is the first item
+            # If state is 'unavailable'
+            if state_info["state"] != "unavailable":
+                history_list.append(
+                    {
+                        "time": state_info["last_updated"],
+                        plant_name: state_info["state"],
+                    }
+                )
+
+        # Convert the list to a DataFrame
+        history_df = pd.DataFrame(history_list)
+
+        # Convert 'time' to datetime type
+        history_df["time"] = pd.to_datetime(history_df["time"])
+
+        # round the time to the nearest minute
+        history_df["time"] = history_df["time"].dt.round("min")
+
+        # remove rows with text
+        history_df[plant_name] = pd.to_numeric(history_df[plant_name], errors="coerce")
+
+        # remove rows with NaN
+        history_df.dropna(inplace=True)
+
+        # if the sensor_df is empty, set it equal to the history_df
+        if sensor_df is None:
+            sensor_df = history_df
+        else:
+            # merge the history_df with the sensor_df
+            sensor_df = sensor_df.merge(history_df, on="time", how="outer")
+
+    # set the index to the time column
+    sensor_df.set_index("time", inplace=True)
+
+    # sort the index
+    sensor_df.sort_index(inplace=True)
+
+    return sensor_df
+
+
 def water(plant, dev_id, ip, local_key, seconds):
     """Used to water a plant for a specified number of seconds.
 
@@ -179,69 +268,21 @@ def main(
         "content-type": "application/json",
     }
 
-    sensor_df = None
+    # Get the moisture sensor data from Home Assistant
+    moisture_sensor_df = get_data_from_home_assistant(
+        plant_dict=plant_dict,
+        sensor="moisture_sensor",
+        home_assistant_url=home_assistant_url,
+        headers=headers,
+    )
 
-    # Specify the time period for the history
-    # Here we're getting the history for the last day
-    start_time = (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat()
-    end_time = datetime.datetime.now().isoformat()
-
-    # we want to loop this process for each plant in the plant_dict
-    for plant_name, plant_data in plant_dict.items():
-        # Making the request to the Home Assistant API
-        response = requests.get(
-            f"{home_assistant_url}/api/history/period/{start_time}",
-            headers=headers,
-            params={"filter_entity_id": plant_data["sensor"], "end_time": end_time},
-        )
-
-        # Check for successful response
-        if response.status_code == 200:
-            history_data = response.json()
-            # logger.info(json.dumps(history_data, indent=2))
-        else:
-            logger.error(
-                f"Failed to retrieve history: {response.status_code}, {response.text}"
-            )
-
-        # Parse the history data into a pandas DataFrame
-        history_list = []
-        for state_info in history_data[
-            0
-        ]:  # Assuming the sensor's history is the first item
-            # If state is 'unavailable'
-            if state_info["state"] != "unavailable":
-                history_list.append(
-                    {
-                        "time": state_info["last_updated"],
-                        plant_name: state_info["state"],
-                    }
-                )
-
-        # Convert the list to a DataFrame
-        history_df = pd.DataFrame(history_list)
-
-        # Convert 'time' to datetime type
-        history_df["time"] = pd.to_datetime(history_df["time"])
-
-        # round the time to the nearest minute
-        history_df["time"] = history_df["time"].dt.round("min")
-
-        # convert the plant_name column to int
-        history_df[plant_name] = history_df[plant_name].astype(int)
-
-        # if the sensor_df is empty, set it equal to the history_df
-        if sensor_df is None:
-            sensor_df = history_df
-        else:
-            # merge the history_df with the sensor_df
-            sensor_df = sensor_df.merge(history_df, on="time", how="outer")
-
-    # set the index to the time column
-    sensor_df.set_index("time", inplace=True)
-
-    # sort the index
-    sensor_df.sort_index(inplace=True)
+    # Get the previous watering time from Home Assistant
+    pump_sensor_df = get_data_from_home_assistant(
+        plant_dict=plant_dict,
+        sensor="pump_sensor",
+        home_assistant_url=home_assistant_url,
+        headers=headers,
+    )
 
     pid_controllers = {}
     for plant, plant_config in plant_dict.items():
@@ -267,7 +308,7 @@ def main(
             pid_controllers[plant]._last_error = plant_config["last_error"]
 
     # Iterate over the DataFrame's columns
-    for plant, series in sensor_df.items():
+    for plant, series in moisture_sensor_df.items():
         if plant in pid_controllers:
             # Drop NaNs and compute the error
             non_nan_values = series.dropna()
@@ -275,13 +316,24 @@ def main(
                 # Get the latest moisture level
                 current_moisture_level = non_nan_values.iloc[-1]
 
+                # Get the last watering time
+                prior_watering_length = pump_sensor_df[plant].dropna().iloc[-1]
+
+                # Grab the PID controller for the plant
                 pid = pid_controllers[plant]
 
                 # Compute the control variable (how long to water)
                 control = pid(current_moisture_level)
 
+                # Check to see if the control variable is the same as the last watering time
+                if control == prior_watering_length:
+                    # if so, we want to change it by a small amount
+                    # this is because Home Assistant will not update the sensor history if the value is the same
+                    # so we need to change it by a small amount to trigger the update
+                    control += 0.01
+
                 # Send the data to Home Assistant
-                if plant_dict[plant]["pump_sensor"]:
+                if plant_dict[plant]["pump_sensor"] and not dont_water:
                     send_data_to_home_assistant(
                         value=control,
                         sensor_name=plant_dict[plant]["pump_sensor"],
