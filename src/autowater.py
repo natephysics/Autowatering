@@ -352,6 +352,7 @@ def main(
                         logger.info(
                             f"Plant {plant} is still resting with moisture level {current_moisture_level} and resting target {plant_dict[plant]['resting_target']}"
                         )
+                        # move on to the next plant
                         continue
                 else:
                     # check to see if the plant should be resting
@@ -371,12 +372,8 @@ def main(
                                 home_assistant_url=home_assistant_url,
                                 headers=headers,
                             )
-
-                        # if not, skip the plant
-                        logger.info(
-                            f"Plant {plant} is resting with moisture level {current_moisture_level}"
-                        )
-                        continue
+                            # move on to the next plant
+                            continue
 
                 # Get the last watering time
                 prior_watering_length = pump_sensor_df[plant].dropna().iloc[-1]
