@@ -58,13 +58,27 @@ def check_in_to_snitch(snitch_url):
         pass
 
 
-def send_data_to_home_assistant(value, sensor_name, home_assistant_url, headers):
-    data = {
-        "state": value,
-        "attributes": {
-            "unit_of_measurement": "s",  # Replace 'units' with appropriate unit of measurement
-        },
-    }
+def send_data_to_home_assistant(
+    value, sensor_name, home_assistant_url, headers, units=None
+):
+    """Sends data to Home Assistant.
+
+    Args:
+        value (float): The value to send to Home Assistant.
+        sensor_name (str): The name of the sensor in Home Assistant.
+        home_assistant_url (str): The URL of the Home Assistant instance.
+        headers (str): The headers for the Home Assistant API.
+        units (str, optional): The units of the value. Defaults to None.
+    """
+    if units:
+        data = {
+            "state": value,
+            "attributes": {
+                "unit_of_measurement": units,
+            },
+        }
+    else:
+        data = {"state": value}
     response = requests.post(
         f"{home_assistant_url}/api/states/sensor.{sensor_name}",
         headers=headers,
@@ -316,6 +330,54 @@ def main(
                 # Get the latest moisture level
                 current_moisture_level = non_nan_values.iloc[-1]
 
+                # check to see if the plant is resting
+                if plant_dict[plant]["resting"]:
+                    # if so, check to see if the moisture level is below the threshold
+                    if current_moisture_level <= plant_dict[plant]["resting_target"]:
+                        # if so, set the resting flag to False
+                        plant_dict[plant]["resting"] = False
+                        logger.info(
+                            f"Plant {plant} is no longer resting. Resuming watering."
+                        )
+
+                        # send the resting data to Home Assistant
+                        send_data_to_home_assistant(
+                            value="off",
+                            sensor_name=plant_dict[plant]["rest_sensor"],
+                            home_assistant_url=home_assistant_url,
+                            headers=headers,
+                        )
+                    else:
+                        # if not, skip the plant
+                        logger.info(
+                            f"Plant {plant} is still resting with moisture level {current_moisture_level} and resting target {plant_dict[plant]['resting_target']}"
+                        )
+                        continue
+                else:
+                    # check to see if the plant should be resting
+                    if plant_dict[plant]["resting_target"]:
+                        # if a resting target is specified, check to see if the moisture level is above the target
+                        if current_moisture_level >= plant_dict[plant]["target"]:
+                            # if so, set the resting flag to True
+                            plant_dict[plant]["resting"] = True
+                            logger.info(
+                                f"Plant {plant} has begun resting with moisture level {current_moisture_level}"
+                            )
+
+                            # send the resting data to Home Assistant
+                            send_data_to_home_assistant(
+                                value="on",
+                                sensor_name=plant_dict[plant]["rest_sensor"],
+                                home_assistant_url=home_assistant_url,
+                                headers=headers,
+                            )
+
+                        # if not, skip the plant
+                        logger.info(
+                            f"Plant {plant} is resting with moisture level {current_moisture_level}"
+                        )
+                        continue
+
                 # Get the last watering time
                 prior_watering_length = pump_sensor_df[plant].dropna().iloc[-1]
 
@@ -326,7 +388,7 @@ def main(
                 control = pid(current_moisture_level)
 
                 # Check to see if the control variable is the same as the last watering time
-                if control == prior_watering_length:
+                if (control == prior_watering_length) and (control > 0):
                     # if so, we want to change it by a small amount
                     # this is because Home Assistant will not update the sensor history if the value is the same
                     # so we need to change it by a small amount to trigger the update
@@ -374,7 +436,7 @@ def main(
             json.dump(plant_dict, f, indent=4)
 
     if "snitch_url" in project_settings:
-        check_in_to_snitch(project_settings["snitch_url"])
+        check_in_to_snitch(snitch_url=project_settings["snitch_url"])
 
 
 if __name__ == "__main__":
