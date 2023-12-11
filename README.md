@@ -156,6 +156,9 @@ Once we have a list of the IP addresses and the device ID and local_key we can a
 }
 ```
 
+> [!CAUTION]
+> I found an interesting issue the watering time. When you use the Tuya app you can set a watering time in the app for each pump. From what I can tell, that watering time that you set in the app, even if the pump automations in the app are turned off, act as a maximum watering time. So if you set the watering time in the app to 60 seconds, even if you set the `max_watering_time` to 120 seconds in the `plant_settings.json` file, the pump will only run for 60 seconds. I think this is actually a good thing as it provides a safety mechanism to prevent the pump from running too long. But it's something to keep in mind when you're setting the `max_watering_time` in the `plant_settings.json` file.
+
 Now we need to match the `sensor` for each moisture sensor to each pump. For each plant, match the sensor name, for example, `sensor.gw1100a_soil_moisture_1` with the corresponding pump for the plant. You can get the sensor name from the Home Assistant home screen by clicking on the name of the sensor > pressing the setting icon in the top right and the name is listed under `Entity ID*`.  
 
 ![Entity ID](images/entity_id.png)
